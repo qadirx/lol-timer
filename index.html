@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0f17">
+<title>Flash Timer</title>
+<style>
+  /* Layout: one-screen phone HUD. Five lane rows, status pill on top, one big thumb button at the bottom. */
+  :root {
+    --bg: #0a0f17;
+    --panel: #121a27;
+    --line: #223046;
+    --fg: #e8eef7;
+    --muted: #8a9bb3;
+    --ready: #6f8fb8;    /* flash is up */
+    --down: #f2b441;     /* flash is on cooldown */
+    --soon: #ff5b4f;     /* last 10 seconds */
+    --accent: #4cc9f0;
+    color-scheme: dark;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.4 var(--sans);
+    -webkit-tap-highlight-color: transparent;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: max(14px, env(safe-area-inset-top, 0px)) max(14px, env(safe-area-inset-bottom, 0px));
+  }
+  main {
+    max-width: 480px;
+    min-height: 100%;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { margin: 0; font-size: 1.15rem; letter-spacing: .14em; text-transform: uppercase; font-weight: 800; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 12px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line);
+    font-size: .8rem; font-weight: 600; color: var(--muted);
+  }
+  .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill[data-state="listening"] { color: var(--fg); }
+  .pill[data-state="listening"]::before { background: #46d19a; box-shadow: 0 0 0 0 rgba(70,209,154,.6); animation: ping 1.8s infinite; }
+  .pill[data-state="speaking"]::before { background: var(--accent); }
+  .pill[data-state="error"] { color: var(--soon); }
+  .pill[data-state="error"]::before { background: var(--soon); }
+  @keyframes ping { 70% { box-shadow: 0 0 0 8px rgba(70,209,154,0); } 100% { box-shadow: 0 0 0 0 rgba(70,209,154,0); } }
+
+  #lanes { display: flex; flex-direction: column; gap: 8px; }
+  .lane {
+    display: grid; grid-template-columns: 52px minmax(0, 1fr) auto auto; align-items: center; gap: 12px;
+    padding: 10px 10px 10px 10px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+    transition: border-color .2s, background .2s;
+  }
+  .lane:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .lane.heard { border-color: var(--accent); background: #15233a; }
+
+  .icon {
+    --p: 0;
+    position: relative; width: 52px; height: 52px; border-radius: 12px; overflow: hidden;
+    display: grid; place-items: center;
+    background: #1a2c47; color: var(--ready);
+  }
+  .icon svg { position: relative; z-index: 1; width: 26px; height: 26px; fill: currentColor; }
+  .icon::after {
+    content: ""; position: absolute; inset: 0;
+    background: conic-gradient(rgba(6,9,15,.74) calc(var(--p) * 360deg), transparent 0);
+  }
+
+  .meta h2 { margin: 0; font-size: 1.05rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .meta p { margin: 0; font-size: .8rem; color: var(--muted); }
+  .time { font: 700 1.9rem/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--ready); min-width: 4.4ch; text-align: right; }
+  .time.is-ready { font-size: 1rem; letter-spacing: .12em; }
+
+  .lane[data-state="down"] .icon, .lane[data-state="down"] .time { color: var(--down); }
+  .lane[data-state="soon"] .icon, .lane[data-state="soon"] .time { color: var(--soon); }
+  .lane[data-state="soon"] { border-color: var(--soon); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { background: #2a1620; } }
+
+  .clear {
+    width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--line);
+    background: transparent; color: var(--muted); font-size: 1.2rem; line-height: 1; cursor: pointer;
+  }
+  .clear[hidden] { display: none; }
+  .clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .spacer-cell { width: 36px; }
+
+  .heard-box { min-height: 2.6em; display: flex; flex-direction: column; gap: 2px; }
+  #heard { font-weight: 700; }
+  #live { font-size: .8rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .primary {
+    margin-top: auto;
+    width: 100%; padding: 18px; border-radius: 16px; border: 0;
+    font: 800 1.1rem var(--sans); letter-spacing: .06em; text-transform: uppercase;
+    background: var(--accent); color: #04121a; cursor: pointer;
+  }
+  .primary[data-mode="stop"] { background: var(--panel); color: var(--fg); border: 1px solid var(--line); }
+  .primary:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+
+  .note { margin: 0; font-size: .8rem; color: var(--muted); }
+  .note strong { color: var(--fg); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pill::before, .lane[data-state="soon"] { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Flash Timer</h1>
+    <div id="pill" class="pill" data-state="idle">Not listening</div>
+  </header>
+
+  <section id="lanes" aria-label="Flash cooldowns"></section>
+
+  <section class="heard-box" aria-live="polite">
+    <span id="heard">Say “mid flash”, “top flash”, “jungle flash”, “bot flash” or “support flash”.</span>
+    <span id="live"></span>
+  </section>
+
+  <p id="note" class="note"></p>
+  <button id="main" class="primary" type="button" data-mode="start">Start listening</button>
+</main>
+
+<script>
+// ---- Settings -------------------------------------------------------------
+const COOLDOWN = 300;   // seconds a flash is down
+const WARN_AT  = 10;    // say the lane out loud this many seconds before it is up
+
+// <matcher>
+const LANES = [
+  { id: 'top',     name: 'Top',     say: 'top',     aliases: ['top', 'tops'] },
+  { id: 'jungle',  name: 'Jungle',  say: 'jungle',  aliases: ['jungle', 'jungler', 'jg', 'jungles'] },
+  { id: 'mid',     name: 'Mid',     say: 'mid',     aliases: ['mid', 'middle', 'meds'] },
+  { id: 'bot',     name: 'Bot',     say: 'bot',     aliases: ['bot', 'bots', 'bottom', 'adc', 'bought', 'both'] },
+  { id: 'support', name: 'Support', say: 'support', aliases: ['support', 'sup', 'supp', 'supports'] }
+];
+const FLASH_WORDS = ['flash', 'flashed', 'flesh', 'flush'];
+
+function laneForWord(word) {
+  for (const lane of LANES) if (lane.aliases.includes(word)) return lane.id;
+  return null;
+}
+
+// Returns the lane id of the LAST "<lane> flash" in the transcript, or null.
+function findCall(text) {
+  const tokens = String(text).toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i];
+    // one-word form, e.g. "midflash"
+    for (const f of FLASH_WORDS) {
+      if (t.length > f.length && t.endsWith(f)) {
+        const lane = laneForWord(t.slice(0, -f.length));
+        if (lane) return lane;
+      }
+    }
+    // two-word form, e.g. "mid flash"
+    if (i > 0 && FLASH_WORDS.includes(t)) {
+      const lane = laneForWord(tokens[i - 1]);
+      if (lane) return lane;
+    }
+  }
+  return null;
+}
+// </matcher>
+
+// ---- State ----------------------------------------------------------------
+const ends = {};      // lane id -> timestamp (ms) when flash is back
+const warned = {};    // lane id -> true once the 10 s call-out was made
+const lastCall = {};  // lane id -> timestamp of last recognised call (debounce)
+const STORE_KEY = 'flash-timer-ends';
+
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}');
+  for (const [id, t] of Object.entries(saved)) if (LANES.some((l) => l.id === id) && t > Date.now()) ends[id] = t;
+} catch (e) {}
+
+function persist() { try { localStorage.setItem(STORE_KEY, JSON.stringify(ends)); } catch (e) {} }
+
+// ---- DOM ------------------------------------------------------------------
+const $ = (s) => document.querySelector(s);
+const lanesEl = $('#lanes'), pillEl = $('#pill'), heardEl = $('#heard'), liveEl = $('#live');
+const noteEl = $('#note'), mainBtn = $('#main');
+
+const BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 2 5 13.5h6L10 22l9-12h-6.2z"/></svg>';
+const rows = {};
+
+for (const lane of LANES) {
+  const el = document.createElement('article');
+  el.className = 'lane';
+  el.tabIndex = 0;
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', lane.name + ' flash. Tap to start the timer by hand.');
+  el.innerHTML =
+    '<div class="icon">' + BOLT + '</div>' +
+    '<div class="meta"><h2>' + lane.name + '</h2><p class="sub">Flash up</p></div>' +
+    '<div class="time is-ready">READY</div>' +
+    '<button class="clear" type="button" aria-label="Clear ' + lane.name + ' timer" hidden>&times;</button>';
+  lanesEl.appendChild(el);
+  rows[lane.id] = {
+    el,
+    icon: el.querySelector('.icon'),
+    sub: el.querySelector('.sub'),
+    time: el.querySelector('.time'),
+    clear: el.querySelector('.clear')
+  };
+  el.addEventListener('click', () => startTimer(lane.id, 'tap'));
+  el.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); startTimer(lane.id, 'tap'); }
+  });
+  rows[lane.id].clear.addEventListener('click', (e) => { e.stopPropagation(); clearTimer(lane.id); });
+}
+
+function fmt(ms) {
+  const s = Math.ceil(ms / 1000);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+function render() {
+  const now = Date.now();
+  for (const lane of LANES) {
+    const r = rows[lane.id], end = ends[lane.id];
+    if (!end) {
+      r.el.dataset.state = 'ready';
+      r.icon.style.setProperty('--p', 0);
+      r.sub.textContent = 'Flash up';
+      r.time.textContent = 'READY';
+      r.time.classList.add('is-ready');
+      r.clear.hidden = true;
+      continue;
+    }
+    const left = Math.max(0, end - now);
+    r.el.dataset.state = left <= WARN_AT * 1000 ? 'soon' : 'down';
+    r.icon.style.setProperty('--p', (left / (COOLDOWN * 1000)).toFixed(4));
+    r.sub.textContent = 'Flash down';
+    r.time.textContent = fmt(left);
+    r.time.classList.remove('is-ready');
+    r.clear.hidden = false;
+  }
+}
+
+function setPill(state, text) { pillEl.dataset.state = state; pillEl.textContent = text; }
+
+// ---- Timers ---------------------------------------------------------------
+function startTimer(id, source) {
+  ends[id] = Date.now() + COOLDOWN * 1000;
+  delete warned[id];
+  persist();
+  const lane = LANES.find((l) => l.id === id);
+  heardEl.textContent = (source === 'voice' ? 'Heard: ' : 'Started: ') + lane.name + ' flash';
+  const el = rows[id].el;
+  el.classList.add('heard');
+  setTimeout(() => el.classList.remove('heard'), 900);
+  render();
+}
+
+function clearTimer(id) {
+  delete ends[id]; delete warned[id]; persist(); render();
+}
+
+function tick() {
+  const now = Date.now();
+  const due = [];
+  for (const lane of LANES) {
+    const end = ends[lane.id];
+    if (!end) continue;
+    const left = end - now;
+    if (left <= 0) { delete ends[lane.id]; delete warned[lane.id]; persist(); }
+    else if (left <= WARN_AT * 1000 && !warned[lane.id]) { warned[lane.id] = true; due.push(lane); }
+  }
+  render();
+  if (due.length) announce(due.map((l) => l.say + ' flash').join('. '));
+}
+setInterval(tick, 250);
+render();
+
+// ---- Speech out -----------------------------------------------------------
+let pendingSpeech = 0;
+
+function announce(text) {
+  if (!('speechSynthesis' in window)) return;
+  pendingSpeech++;
+  stopRec();
+  setPill('speaking', 'Speaking');
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    pendingSpeech = Math.max(0, pendingSpeech - 1);
+    if (pendingSpeech === 0) setTimeout(startRec, 500);   // let the speaker tail die before listening again
+  };
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-US';
+  u.onend = finish;
+  u.onerror = finish;
+  speechSynthesis.speak(u);
+  setTimeout(finish, 5000);                                // safety net if the browser never fires onend
+}
+
+// ---- Speech in ------------------------------------------------------------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, recActive = false, running = false, lastStart = 0, wake = null;
+
+function startRec() {
+  if (!SR || !running || pendingSpeech > 0 || recActive) return;
+  rec = new SR();
+  rec.lang = 'en-US';
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.maxAlternatives = 1;
+
+  const mine = rec;
+  mine.onstart = () => { recActive = true; setPill('listening', 'Listening'); };
+
+  mine.onresult = (e) => {
+    let text = '';
+    for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript + ' ';
+    liveEl.textContent = text.trim().slice(-70);
+    const id = findCall(text);
+    if (!id) return;
+    const now = Date.now();
+    if (!(lastCall[id] && now - lastCall[id] < 1500)) {
+      lastCall[id] = now;
+      startTimer(id, 'voice');
+    }
+    try { mine.abort(); } catch (err) {}      // clears the transcript; onend restarts listening
+  };
+
+  mine.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      running = false;
+      setPill('error', 'Mic blocked');
+      noteEl.innerHTML = '<strong>Microphone or Dictation is off.</strong> On iPhone: Settings &rarr; General &rarr; Keyboard &rarr; turn on <strong>Enable Dictation</strong>, then in Safari tap <strong>aA</strong> &rarr; Website Settings &rarr; Microphone &rarr; Allow. Reload the page.';
+      setMainButton();
+    } else if (e.error === 'network') {
+      setPill('error', 'No connection');
+    }
+    // 'no-speech' and 'aborted' are normal; onend restarts.
+  };
+
+  mine.onend = () => {
+    recActive = false;
+    if (mine !== rec) return;
+    if (!running || pendingSpeech > 0) return;
+    const quick = Date.now() - lastStart < 800;           // failing immediately: back off
+    setTimeout(startRec, quick ? 1000 : 150);
+  };
+
+  lastStart = Date.now();
+  try { mine.start(); } catch (err) { setTimeout(startRec, 1000); }
+}
+
+function stopRec() {
+  if (rec) { try { rec.abort(); } catch (e) {} }
+}
+
+// ---- Screen wake lock -----------------------------------------------------
+async function lockScreen() {
+  try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  tick();
+  if (running) { lockScreen(); startRec(); }
+});
+
+// ---- Start / stop ---------------------------------------------------------
+function setMainButton() {
+  if (running) { mainBtn.textContent = 'Pause listening'; mainBtn.dataset.mode = 'stop'; }
+  else         { mainBtn.textContent = 'Start listening'; mainBtn.dataset.mode = 'start'; }
+}
+
+mainBtn.addEventListener('click', () => {
+  if (running) {
+    running = false;
+    stopRec();
+    if (wake) { try { wake.release(); } catch (e) {} wake = null; }
+    setPill('idle', 'Paused');
+    setMainButton();
+    return;
+  }
+  if (!SR) return;
+  // Unlock spoken call-outs: iOS only allows speech after a tap.
+  if ('speechSynthesis' in window) {
+    const u = new SpeechSynthesisUtterance('ready');
+    u.volume = 0;
+    speechSynthesis.speak(u);
+  }
+  running = true;
+  noteEl.textContent = 'Keep this page open and the screen on. Listening stops if you lock the phone or switch apps.';
+  setMainButton();
+  lockScreen();
+  startRec();
+});
+
+// ---- First-load checks ----------------------------------------------------
+if (!SR) {
+  setPill('error', 'No voice support');
+  noteEl.innerHTML = '<strong>This browser can’t do voice recognition.</strong> Open this page in Safari on iPhone. You can still tap a lane to start its timer.';
+  mainBtn.disabled = true;
+  mainBtn.style.opacity = .5;
+} else if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.protocol !== 'file:') {
+  noteEl.innerHTML = '<strong>Voice needs a secure (https) address.</strong>';
+} else {
+  noteEl.textContent = 'Tap Start, allow the microphone, then call your flashes. Add this page to Safari’s bookmarks, not the home screen: voice often fails in home-screen mode.';
+}
+</script>
+</body>
+</html>
